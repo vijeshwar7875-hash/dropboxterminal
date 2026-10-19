@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dropbox Image Library</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", sans-serif;
+        color: #172b4d;
+        background: #f4f7fb;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 1100px; margin: 0 auto; padding: 48px 24px; }
+      h1 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.5rem); }
+      .subtitle { margin: 10px 0 28px; color: #5e6c84; }
+      .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+      button, .file-label {
+        border: 0; border-radius: 8px; padding: 11px 16px; font: inherit;
+        cursor: pointer; font-weight: 600;
+      }
+      button:disabled { cursor: wait; opacity: .6; }
+      .primary, .file-label { background: #1264a3; color: white; }
+      .secondary { background: #e8eef5; color: #172b4d; }
+      #file-input { display: none; }
+      #status { min-height: 24px; margin: 18px 0; color: #44546f; }
+      #status.error { color: #ae2e24; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 18px; }
+      .card { overflow: hidden; border-radius: 12px; background: white; box-shadow: 0 2px 10px #091e4220; }
+      .preview { display: grid; height: 190px; place-items: center; background: #e9eef5; }
+      .preview img { width: 100%; height: 100%; object-fit: cover; }
+      .details { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; }
+      .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .delete { flex: none; padding: 8px 10px; background: #ffebe6; color: #ae2e24; }
+      .empty { grid-column: 1 / -1; padding: 40px; border: 1px dashed #b3bac5; border-radius: 12px; text-align: center; color: #5e6c84; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Dropbox Image Library</h1>
+      <p class="subtitle">Images in your Dropbox root folder appear here. Upload and delete them from this page.</p>
+      <div class="toolbar">
+        <label class="file-label" for="file-input">Add images</label>
+        <input id="file-input" type="file" accept="image/*" multiple />
+        <button id="refresh" class="secondary" type="button">Refresh</button>
+      </div>
+      <p id="status" role="status" aria-live="polite"></p>
+      <section id="gallery" class="grid" aria-label="Dropbox images"></section>
+    </main>
+    <script>
+      const gallery = document.querySelector("#gallery");
+      const status = document.querySelector("#status");
+      const fileInput = document.querySelector("#file-input");
+      const refreshButton = document.querySelector("#refresh");
+
+      function showStatus(message, isError = false) {
+        status.textContent = message;
+        status.classList.toggle("error", isError);
+      }
+
+      async function api(url, options) {
+        const response = await fetch(url, options);
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Request failed.");
+        return result;
+      }
+
+      async function loadImages() {
+        refreshButton.disabled = true;
+        showStatus("Loading images…");
+        try {
+          const { images } = await api("/api/images");
+          gallery.replaceChildren();
+          if (images.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "empty";
+            empty.textContent = "No images found in the Dropbox root folder.";
+            gallery.append(empty);
+          }
+          for (const image of images) {
+            const card = document.createElement("article");
+            card.className = "card";
+            const preview = document.createElement("div");
+            preview.className = "preview";
+            const img = document.createElement("img");
+            img.src = image.url;
+            img.alt = image.name;
+            img.loading = "lazy";
+            preview.append(img);
+            const details = document.createElement("div");
+            details.className = "details";
+            const name = document.createElement("span");
+            name.className = "name";
+            name.textContent = image.name;
+            name.title = image.name;
+            const remove = document.createElement("button");
+            remove.className = "delete";
+            remove.type = "button";
+            remove.textContent = "Delete";
+            remove.setAttribute("aria-label", `Delete ${image.name}`);
+            remove.addEventListener("click", () => deleteImage(image, remove));
+            details.append(name, remove);
+            card.append(preview, details);
+            gallery.append(card);
+          }
+          showStatus(`${images.length} image${images.length === 1 ? "" : "s"} in Dropbox.`);
+        } catch (error) {
+          showStatus(error.message, true);
+        } finally {
+          refreshButton.disabled = false;
+        }
+      }
+
+      async function deleteImage(image, button) {
+        if (!confirm(`Delete "${image.name}" from Dropbox?`)) return;
+        button.disabled = true;
+        try {
+          await api("/api/images", {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ path: image.path }),
+          });
+          showStatus(`${image.name} deleted from Dropbox.`);
+          await loadImages();
+        } catch (error) {
+          showStatus(error.message, true);
+          button.disabled = false;
+        }
+      }
+
+      fileInput.addEventListener("change", async () => {
+        const files = [...fileInput.files];
+        if (!files.length) return;
+        fileInput.disabled = true;
+        try {
+          for (const file of files) {
+            if (!file.type.startsWith("image/")) {
+              throw new Error(`${file.name} is not an image.`);
+            }
+            showStatus(`Uploading ${file.name}…`);
+            await api(`/api/images?name=${encodeURIComponent(file.name)}`, {
+              method: "POST",
+              headers: { "content-type": file.type },
+              body: file,
+            });
+          }
+          showStatus(`${files.length} image${files.length === 1 ? "" : "s"} uploaded.`);
+          await loadImages();
+        } catch (error) {
+          showStatus(error.message, true);
+          await loadImages();
+        } finally {
+          fileInput.disabled = false;
+          fileInput.value = "";
+        }
+      });
+
+      refreshButton.addEventListener("click", loadImages);
+      loadImages();
+    </script>
+  </body>
+</html>
